@@ -180,6 +180,7 @@ RakPeer::RakPeer()
 	splitMessageProgressInterval=0;
 	unreliableTimeout=0;
 	networkIDManager=0;
+	maxOutgoingBPS=0;
 
 #if defined (_WIN32) && defined(USE_WAIT_FOR_MULTIPLE_EVENTS)
 	recvEvent = INVALID_HANDLE_VALUE;
@@ -207,6 +208,8 @@ RakPeer::~RakPeer()
 
 	StringCompressor::RemoveReference();
 	StringTable::RemoveReference();
+
+	CloseHandle(processPacketsThreadHandle); // RBXGS Decomp: Added
 }
 
 // --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -376,9 +379,9 @@ bool RakPeer::Startup( unsigned short maxConnections, int _threadSleepTimer, Soc
 
 				// SetThreadPriority(processPacketsThreadHandle, THREAD_PRIORITY_HIGHEST);
 
-				CloseHandle( processPacketsThreadHandle );
+				//CloseHandle( processPacketsThreadHandle ); // RBXGS Decomp: Commented out
 
-				processPacketsThreadHandle = 0;
+				//processPacketsThreadHandle = 0; // RBXGS Decomp: Commented out
 
 			}
 
@@ -2480,6 +2483,13 @@ void RakPeer::ApplyNetworkSimulator( double maxSendBPS, unsigned short minExtraP
 }
 
 // --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void RakPeer::SetPerConnectionOutgoingBandwidthLimit( unsigned maxBitsPerSecond )
+{
+	maxOutgoingBPS=maxBitsPerSecond;
+}
+
+// --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Returns if you previously called ApplyNetworkSimulator
 // --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool RakPeer::IsNetworkSimulatorActive( void )
@@ -4238,7 +4248,7 @@ bool RakPeer::RunUpdateCycle( void )
 				SendImmediate((char*)&keepAlive,8,LOW_PRIORITY, RELIABLE, 0, remoteSystem->systemAddress, false, false, timeNS);
 			}
 
-			remoteSystem->reliabilityLayer.Update( connectionSockets[remoteSystem->connectionSocketIndex], systemAddress, remoteSystem->MTUSize, timeNS, messageHandlerList ); // systemAddress only used for the internet simulator test
+			remoteSystem->reliabilityLayer.Update( connectionSockets[remoteSystem->connectionSocketIndex], systemAddress, remoteSystem->MTUSize, timeNS, maxOutgoingBPS, messageHandlerList ); // systemAddress only used for the internet simulator test
 
 			// Check for failure conditions
 			if ( remoteSystem->reliabilityLayer.IsDeadConnection() ||

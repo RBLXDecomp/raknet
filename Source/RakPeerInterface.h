@@ -454,6 +454,12 @@ public:
 	/// \param[in] extraPingVariance The additional random time to delay sends.
 	virtual void ApplyNetworkSimulator( double maxSendBPS, unsigned short minExtraPing, unsigned short extraPingVariance)=0;
 
+	/// Limits how much outgoing bandwidth can be sent per-connection.
+	/// This limit does not apply to the sum of all connections!
+	/// Exceeding the limit queues up outgoing traffic
+	/// \param[in] maxBitsPerSecond Maximum bits per second to send.  Use 0 for unlimited (default). Once set, it takes effect immedately and persists until called again.
+	virtual void SetPerConnectionOutgoingBandwidthLimit( unsigned maxBitsPerSecond )=0;
+
 	/// Returns if you previously called ApplyNetworkSimulator
 	/// \return If you previously called ApplyNetworkSimulator
 	virtual bool IsNetworkSimulatorActive( void )=0;

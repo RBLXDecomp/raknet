@@ -149,6 +149,7 @@ void ReliabilityLayer::InitializeVariables( void )
 	memset( &statistics, 0, sizeof( statistics ) );
 	statistics.connectionStartTime = RakNet::GetTime();
 	splitPacketId = 0;
+	throughputCapCountdown=0;
 	sendMessageNumberIndex = 0;
 	lastUpdateTime= RakNet::GetTimeNS();
 	lastTimeBetweenPacketsIncrease=lastTimeBetweenPacketsDecrease=lastUpdateTime;
@@ -1020,7 +1021,9 @@ bool ReliabilityLayer::Send( char *data, int numberOfBitsToSend, PacketPriority 
 //-------------------------------------------------------------------------------------------------------
 // Run this once per game cycle.  Handles internal lists and actually does the send
 //-------------------------------------------------------------------------------------------------------
-void ReliabilityLayer::Update( SOCKET s, SystemAddress systemAddress, int MTUSize, RakNetTimeNS time, DataStructures::List<PluginInterface*> &messageHandlerList )
+void ReliabilityLayer::Update( SOCKET s, SystemAddress systemAddress, int MTUSize, RakNetTimeNS time,
+							  unsigned bitsPerSecondLimit,
+							  DataStructures::List<PluginInterface*> &messageHandlerList )
 {
 	// This line is necessary because the timer isn't accurate
 	if (time <= lastUpdateTime)
@@ -1030,6 +1033,7 @@ void ReliabilityLayer::Update( SOCKET s, SystemAddress systemAddress, int MTUSiz
 		return;
 	}
 
+	RakNetTimeNS elapsed = time - lastUpdateTime;
 	lastUpdateTime=time;
 	UpdateThreadedMemory();
 
@@ -1059,65 +1063,97 @@ void ReliabilityLayer::Update( SOCKET s, SystemAddress systemAddress, int MTUSiz
 		
 	}
 
-	if (time >= nextSendTime)
-	{
-		RakNetTimeNS usedTime=(RakNetTimeNS)0;
-		RakNetTimeNS availableTime = time - nextSendTime;
-		if (availableTime > timeBetweenPackets*(RakNetTimeNS)100)
-		{
-			availableTime=timeBetweenPackets*(RakNetTimeNS)100;
-			nextSendTime=time;
-		}
-
-		while ( usedTime < availableTime )
-		{
-			bool reliableDataSent;
-			updateBitStream.Reset();
-			if ( GenerateDatagram( &updateBitStream, MTUSize, &reliableDataSent, time, systemAddress, messageHandlerList ) )
-			{
-
-#ifndef _RELEASE
-
-				if (minExtraPing > 0 || extraPingVariance > 0)
-				{
-					// Delay the send to simulate lag
-					DataAndTime *dt;
-					dt = new DataAndTime;
-					memcpy( dt->data, updateBitStream.GetData(), updateBitStream.GetNumberOfBytesUsed() );
-					dt->length = updateBitStream.GetNumberOfBytesUsed();
-					dt->sendTime = time + (RakNetTimeNS)minExtraPing*1000;
-					if (extraPingVariance > 0)
-						dt->sendTime += ( randomMT() % (int)extraPingVariance );
-					delayList.Insert( dt );
-				}
-				else
-#endif
-					SendBitStream( s, systemAddress, &updateBitStream );
-
-				usedTime+=timeBetweenPackets;
-			}
-			else
-				break;
-		}
-
-		nextSendTime+=usedTime;
-
-		if (usedTime >= availableTime)
-			continuousSend=true;
-		else
-			continuousSend=false;
-	}
+	bool limitThroughput;
+	if (bitsPerSecondLimit==0 || throughputCapCountdown <= 0)
+		limitThroughput=false;
 	else
 	{
-		// Send acks only
-		if (acknowlegements.Size()>0)
+		throughputCapCountdown-=elapsed;
+		if (throughputCapCountdown<0)
 		{
-			updateBitStream.Reset();
-			updateBitStream.Write(true);
-			updateBitStream.Write(remoteSystemTime);
-			unsigned bitsSent = acknowlegements.Serialize(&updateBitStream, (MTUSize-UDP_HEADER_SIZE)*8-1, true);
-			statistics.acknowlegementBitsSent +=bitsSent;
-			SendBitStream( s, systemAddress, &updateBitStream );
+			limitThroughput=false;
+			throughputCapCountdown=0;
+		}
+		else
+		{
+			limitThroughput=true;
+			continuousSend=false; // Blocked from sending due to throughput limit, so not sending continuously
+		}
+	}
+
+	if (limitThroughput==false)
+	{
+		if (time >= nextSendTime)
+		{
+			RakNetTimeNS usedTime=(RakNetTimeNS)0;
+			RakNetTimeNS availableTime = time - nextSendTime;
+			if (availableTime > timeBetweenPackets*(RakNetTimeNS)100)
+			{
+				availableTime=timeBetweenPackets*(RakNetTimeNS)100;
+				nextSendTime=time;
+			}
+
+			while ( usedTime < availableTime )
+			{
+				bool reliableDataSent;
+				updateBitStream.Reset();
+				if ( GenerateDatagram( &updateBitStream, MTUSize, &reliableDataSent, time, systemAddress, messageHandlerList ) )
+				{
+#ifndef _RELEASE
+					if (minExtraPing > 0 || extraPingVariance > 0)
+					{
+						// Delay the send to simulate lag
+						DataAndTime *dt;
+						dt = new DataAndTime;
+						memcpy( dt->data, updateBitStream.GetData(), updateBitStream.GetNumberOfBytesUsed() );
+						dt->length = updateBitStream.GetNumberOfBytesUsed();
+						dt->sendTime = time + (RakNetTimeNS)minExtraPing*1000;
+						if (extraPingVariance > 0)
+							dt->sendTime += ( randomMT() % (int)extraPingVariance );
+						delayList.Insert( dt );
+					}
+					else
+#endif
+						SendBitStream( s, systemAddress, &updateBitStream );
+
+					if (bitsPerSecondLimit > 0)
+					{
+						throughputCapCountdown+=(RakNetTimeNS)(1000000.0 * (double) updateBitStream.GetNumberOfBitsUsed() / (double) bitsPerSecondLimit);
+						// Prevent sending a large burst and then doing nothing for a long time
+						if (throughputCapCountdown>30000)
+							break;
+					}
+
+					usedTime+=timeBetweenPackets;
+				}
+				else
+					break;
+			}
+
+			nextSendTime+=usedTime;
+
+			if (usedTime >= availableTime)
+				continuousSend=true;
+			else
+				continuousSend=false;
+		}
+		else
+		{
+			// Send acks only
+			if (acknowlegements.Size()>0)
+			{
+				updateBitStream.Reset();
+				updateBitStream.Write(true);
+				updateBitStream.Write(remoteSystemTime);
+				unsigned bitsSent = acknowlegements.Serialize(&updateBitStream, (MTUSize-UDP_HEADER_SIZE)*8-1, true);
+				statistics.acknowlegementBitsSent +=bitsSent;
+				SendBitStream( s, systemAddress, &updateBitStream );
+
+				if (bitsPerSecondLimit > 0)
+				{
+					throughputCapCountdown+=(RakNetTimeNS)(1000000.0 * (double) updateBitStream.GetNumberOfBitsUsed() / (double) bitsPerSecondLimit);
+				}
+			}
 		}
 	}
 

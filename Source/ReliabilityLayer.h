@@ -114,8 +114,9 @@ public:
 	/// \param[in] systemAddress The Unique Player Identifier who shouldhave sent some packets
 	/// \param[in] MTUSize maximum datagram size
 	/// \param[in] time current system time
+	/// \param[in] maxBitsPerSecond if non-zero, enforces that outgoing bandwidth does not exceed this amount
 	/// \param[in] messageHandlerList A list of registered plugins
-	void Update(  SOCKET s, SystemAddress systemAddress, int MTUSize, RakNetTimeNS time, DataStructures::List<PluginInterface*> &messageHandlerList );
+	void Update(  SOCKET s, SystemAddress systemAddress, int MTUSize, RakNetTimeNS time, unsigned maxBitsPerSecond, DataStructures::List<PluginInterface*> &messageHandlerList );
 
 	/// If Read returns -1 and this returns true then a modified packetwas detected
 	/// \return true when a modified packet is detected
@@ -326,6 +327,10 @@ private:
 	// Limit changes in throughput to once per ping - otherwise even if lag starts we don't know about it
 	// In the meantime the connection is flooded and overrun.
 	RakNetTimeNS nextAllowedThroughputSample;
+
+	// If Update::maxBitsPerSecond > 0, then throughputCapCountdown is used as a timer to prevent sends for some amount of time after each send, depending on
+	// the amount of data sent
+	long long throughputCapCountdown;
 
 	DataBlockEncryptor encryptor;
 	unsigned sendPacketCount, receivePacketCount;
