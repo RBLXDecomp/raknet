@@ -19,17 +19,23 @@
 #include "Console1Includes.h" // Developers of a certain platform will know what to do here.
 #elif defined(_WIN32)
 #include <windows.h>
+DWORD mProcMask;
+DWORD mSysMask;
+HANDLE mThread;
 static LARGE_INTEGER yo;
 #elif defined(_CONSOLE_2)
 #include "Console2Includes.h"
 uint64_t ticksPerSecond;
+uint64_t initialTime;
 #else
 #include <sys/time.h>
 #include <unistd.h>
-static timeval tp, initialTime;
+static timeval tp;
+RakNetTimeNS initialTime;
 #endif
 
 static bool initialized=false;
+int queryCount=0;
 
 RakNetTime RakNet::GetTime( void )
 {
@@ -37,74 +43,110 @@ RakNetTime RakNet::GetTime( void )
 }
 RakNetTimeNS RakNet::GetTimeNS( void )
 {
-	if ( initialized == false )
+#if defined(_CONSOLE_2)
+	if ( initialized == false)
 	{
-#ifdef _WIN32
+		ticksPerSecond = _CONSOLE_2_GetTicksPerSecond();
+		// Use the function to get elapsed ticks, this is a macro.
+		_CONSOLE_2_GetElapsedTicks(curTime);
+		uint64_t quotient, remainder;
+		quotient=(curTime / ticksPerSecond);
+		remainder=(curTime % ticksPerSecond);
+		initialTime = (RakNetTimeNS) quotient*(RakNetTimeNS)1000000 + (remainder*(RakNetTimeNS)1000000 / ticksPerSecond);
+		initialized = true;
+	}
+#elif (defined(__GNUC__)  || defined(__GCCXML__))
+	if ( initialized == false)
+	{
+		gettimeofday( &tp, 0 );
+		initialized=true;
+		// I do this because otherwise RakNetTime in milliseconds won't work as it will underflow when dividing by 1000 to do the conversion
+		initialTime = ( tp.tv_sec ) * (RakNetTimeNS) 1000000 + ( tp.tv_usec );
+	}	
+#else
+	// Win32
+	if ( initialized == false || ++queryCount==200)
+	{
 		QueryPerformanceFrequency( &yo );
 		// The original code shifted right 10 bits
 		//counts = yo.QuadPart >> 10;
 		// It gives the wrong value since 2^10 is not 1000
-		//	counts = yo.QuadPart;// / 1000;
-#elif defined(_CONSOLE_2)
-		// Use a function to get ticks per second, this is a macro
-		ticksPerSecond = _CONSOLE_2_GetTicksPerSecond();
+		// counts = yo.QuadPart;// / 1000;
+
+		queryCount=0;
+		initialized = true;
+		// Save the current process
+		HANDLE mProc = GetCurrentProcess();
+
+		// Get the current Affinity
+#if _MSC_VER >= 1400 && defined (_M_X64)
+		GetProcessAffinityMask(mProc, (PDWORD_PTR)&mProcMask, (PDWORD_PTR)&mSysMask);
 #else
-		gettimeofday( &initialTime, 0 );
+		GetProcessAffinityMask(mProc, &mProcMask, &mSysMask);
 #endif
 
-		initialized = true;
+		mThread = GetCurrentThread();
+
 	}
+#endif
 
-	static RakNetTimeNS lastVal=(RakNetTimeNS)0;
+#if defined(_CONSOLE_2)
+	uint64_t curTime;
+	// Use the function to get elapsed ticks, this is a macro.
+	_CONSOLE_2_GetElapsedTicks(curTime);
+	uint64_t quotient, remainder;
+	quotient=(curTime / ticksPerSecond);
+	remainder=(curTime % ticksPerSecond);
+	curTime = (RakNetTimeNS) quotient*(RakNetTimeNS)1000000 + (remainder*(RakNetTimeNS)1000000 / ticksPerSecond);
+	// Subtract from initialTime so the millisecond conversion does not underflow
+	return curTime - initialTime;
+#elif defined(_WIN32)
 	RakNetTimeNS curTime;
+	static RakNetTimeNS lastQueryVal=(RakNetTimeNS)0;
+	static unsigned long lastTickCountVal = GetTickCount();
 
-#ifdef _WIN32
 	LARGE_INTEGER PerfVal;
 
+	// Set affinity to the first core
+	SetThreadAffinityMask(mThread, 1);
+
+	// Query the timer
 	QueryPerformanceCounter( &PerfVal );
+
+	// Reset affinity
+	SetThreadAffinityMask(mThread, mProcMask);
 
 	__int64 quotient, remainder;
 	quotient=((PerfVal.QuadPart) / yo.QuadPart);
 	remainder=((PerfVal.QuadPart) % yo.QuadPart);
 	curTime = (RakNetTimeNS) quotient*(RakNetTimeNS)1000000 + (remainder*(RakNetTimeNS)1000000 / yo.QuadPart);
 
-#elif defined(_CONSOLE_2)
-	uint64_t currentTime;
-	// Use the function to get elapsed ticks, this is a macro.
-	_CONSOLE_2_GetElapsedTicks(currentTime);
-	uint64_t quotient, remainder;
-	quotient=(currentTime / ticksPerSecond);
-	remainder=(currentTime % ticksPerSecond);
-	curTime = (RakNetTimeNS) quotient*(RakNetTimeNS)1000000 + (remainder*(RakNetTimeNS)1000000 / ticksPerSecond);
-	return curTime;
-#else
-	gettimeofday( &tp, 0 );
-
-	curTime = ( tp.tv_sec - initialTime.tv_sec ) * (RakNetTimeNS) 1000000 + ( tp.tv_usec - initialTime.tv_usec );
-#endif
-
-	// To workaround http://support.microsoft.com/kb/274323 where the timer can sometimes jump forward by hours or days
-	// Call it twice and hope that fixes it
-	if (lastVal!=(RakNetTimeNS)0 && (curTime < lastVal || curTime-lastVal>(RakNetTimeNS)1000*(RakNetTimeNS)1000*(RakNetTimeNS)60*(RakNetTimeNS)1))
+	if (lastQueryVal==0)
 	{
-#ifdef _WIN32
-		LARGE_INTEGER PerfVal;
-
-		QueryPerformanceCounter( &PerfVal );
-
-		__int64 quotient, remainder;
-		quotient=((PerfVal.QuadPart) / yo.QuadPart);
-		remainder=((PerfVal.QuadPart) % yo.QuadPart);
-		curTime = (RakNetTimeNS) quotient*(RakNetTimeNS)1000000 + (remainder*(RakNetTimeNS)1000000 / yo.QuadPart);
-
-#elif !defined(_CONSOLE_2)
-		gettimeofday( &tp, 0 );
-
-		curTime = ( tp.tv_sec - initialTime.tv_sec ) * (RakNetTimeNS) 1000000 + ( tp.tv_usec - initialTime.tv_usec );
-#endif
-
+		// First call
+		lastQueryVal=curTime;
+		return curTime;
 	}
 
-	lastVal=curTime;
+	// To workaround http://support.microsoft.com/kb/274323 where the timer can sometimes jump forward by hours or days
+	unsigned long curTickCount = GetTickCount();
+	unsigned elapsedTickCount = curTickCount - lastTickCountVal;
+	RakNetTimeNS elapsedQueryVal = curTime - lastQueryVal;
+	if (elapsedQueryVal/1000 > elapsedTickCount+100)
+	{
+		curTime=lastQueryVal+elapsedTickCount*1000;
+	}
+
+	lastTickCountVal=curTickCount;
+	lastQueryVal=curTime;
 	return curTime;
+#else
+	// GCC
+	RakNetTimeNS curTime;
+	gettimeofday( &tp, 0 );
+
+	curTime = ( tp.tv_sec ) * (RakNetTimeNS) 1000000 + ( tp.tv_usec );
+	// Subtract from initialTime so the millisecond conversion does not underflow
+	return curTime - initialTime;
+#endif
 }

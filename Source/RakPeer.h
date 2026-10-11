@@ -464,6 +464,12 @@ public:
 	/// \param[in] extraPingVariance The additional random time to delay sends.
     void ApplyNetworkSimulator( double maxSendBPS, unsigned short minExtraPing, unsigned short extraPingVariance);
 
+	/// Limits how much outgoing bandwidth can be sent per-connection.
+	/// This limit does not apply to the sum of all connections!
+	/// Exceeding the limit queues up outgoing traffic
+	/// \param[in] maxBitsPerSecond Maximum bits per second to send.  Use 0 for unlimited (default). Once set, it takes effect immedately and persists until called again.
+	void SetPerConnectionOutgoingBandwidthLimit( unsigned maxBitsPerSecond );
+
 	/// Returns if you previously called ApplyNetworkSimulator
 	/// \return If you previously called ApplyNetworkSimulator
 	bool IsNetworkSimulatorActive( void );
@@ -747,6 +753,8 @@ protected:
 
 	// For redirecting sends through the router plugin.  Unfortunate I have to use this architecture.
 	RouterInterface *router;
+
+	unsigned maxOutgoingBPS;
 
 	// Nobody would use the internet simulator in a final build.
 #ifndef _RELEASE
