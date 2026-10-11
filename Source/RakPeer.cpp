@@ -50,7 +50,7 @@
 #ifdef _CONSOLE_1
 //
 #elif defined(_WIN32)
-//
+#include <malloc.h>
 #else
 #include <alloca.h> // Console 2
 #include <stdlib.h>
